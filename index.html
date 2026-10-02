@@ -184,7 +184,7 @@ canvas{display:block;width:100%;height:190px;background:var(--surface);border:1.
     <p>Within 10 cents counts as in tune; a semitone is 100 cents.</p>
     <p>Sing an open vowel like "ah" in a quiet room. Hold the phone about an arm's length away.</p>
     <p>Reference notes now ring for about as long as you need to hold a note steady (around a third of a second), and the tone itself has a softer, more piano-like strike and decay.</p>
-    <p>In Sequence and Memory mode, matching is now more forgiving (within about a third of a semitone) and octave-flexible — singing the right note an octave higher or lower than the reference still counts as correct.</p>
+    <p>In Sequence and Memory mode, matching now accepts anything closer to the target note than to its neighbors (within half a semitone) and is octave-flexible — singing the right note an octave higher or lower than the reference still counts as correct. A brief wobble off-pitch no longer resets your progress to zero; it just eases back a bit, so natural vibrato won't keep you from confirming a note you're actually holding.</p>
     <p>In Sequence mode, play the notes as a chord or one by one, then sing them back in order — each circle turns into a check once you hold that note steady for a moment, and the app moves you to the next one.</p>
     <p>Set the length to 1 for a single-note trainer, or 3 for a chord trainer. Tap 🎲 Random note(s) to get a fresh pick from the piano's two center octaves — it plays right away, and you can tap Play sequence any time to hear it again. Turn on Auto-continue to get a brand new random note or chord automatically each time you complete one.</p>
     <p><b>Memory mode</b> is built for people who lose earlier notes as soon as they hear a new one. It starts with a single note; each time you sing it back correctly, it replays everything so far plus one new note, and you sing the whole chain from the start. This forces you to actually retain each pitch rather than only the most recent one — a normal skill to build, and it improves with repetition.</p>
@@ -263,7 +263,7 @@ let trail=[];const WINDOW=8000;
 let viewCenter=60,voicedMs=0,goodMs=0,holdMs=0,bestHold=0;
 let seqLen=3,seqNotes=[57,61,64,60],seqIndex=0,seqStates=['current','pending','pending','pending'],seqPlayMode='chord',seqDone=false,comboCount=0;
 let memPool=[],memLen=1,memPos=0,memBest=1;
-const HOLD_MS=350,HOLD_S=HOLD_MS/1000,NOTE_GAP=Math.max(0.1,HOLD_S*0.35);
+const HOLD_MS=280,HOLD_S=HOLD_MS/1000,NOTE_GAP=Math.max(0.1,HOLD_S*0.35);
 
 // target select
 const sel=$('targetSel');
@@ -509,9 +509,9 @@ function loop(now){
   let midi=null;
   if(f>0){
     const m=69+12*Math.log2(f/440);
-    hist.push(m);if(hist.length>5)hist.shift();
+    hist.push(m);if(hist.length>3)hist.shift();
     const med=median(hist);
-    smooth=(smooth===null||Math.abs(med-smooth)>0.6)?med:smooth+0.35*(med-smooth);
+    smooth=(smooth===null||Math.abs(med-smooth)>0.6)?med:smooth+0.55*(med-smooth);
     lastVoiced=now;midi=smooth;
   }else if(now-lastVoiced>150){hist=[];smooth=null;}
   trail.push({t:now,m:midi});
@@ -551,7 +551,7 @@ function update(midi,f,dt){
       setVerdict('Sequence complete! 🎉','good');
     }else{
       const want=seqNotes[seqIndex];
-      if(ac<=35){
+      if(ac<=50){
         holdMs+=dt;
         if(holdMs>=HOLD_MS){
           seqStates[seqIndex]='correct';seqIndex++;holdMs=0;
@@ -565,7 +565,7 @@ function update(midi,f,dt){
           else{seqStates[seqIndex]='current';renderSeqProgress();setVerdict('Nice — now sing note '+(seqIndex+1)+': '+nameOf(seqNotes[seqIndex])+octOf(seqNotes[seqIndex]),'good');}
         }else setVerdict('Holding note '+(seqIndex+1)+'…','good');
       }else{
-        holdMs=0;
+        holdMs=Math.max(0,holdMs-dt*1.5);
         const semis=Math.round(Math.abs(midi-want));
         if(semis>=1)setVerdict((cents<0?'Too low':'Too high')+' — aim for '+nameOf(want)+octOf(want),cents<0?'flat':'sharp');
         else setVerdict((cents<0?'Slightly flat':'Slightly sharp')+' for note '+(seqIndex+1),cents<0?'flat':'sharp');
@@ -576,7 +576,7 @@ function update(midi,f,dt){
 
   if(mode==='memory'){
     const want=memPool[memPos];
-    if(ac<=35){
+    if(ac<=50){
       holdMs+=dt;
       if(holdMs>=HOLD_MS){
         memPos++;holdMs=0;renderMemProgress();
@@ -593,7 +593,7 @@ function update(midi,f,dt){
         }else setVerdict('Good — now note '+(memPos+1)+' of '+memLen+', from memory','good');
       }else setVerdict('Holding…','good');
     }else{
-      holdMs=0;
+      holdMs=Math.max(0,holdMs-dt*1.5);
       setVerdict(cents<0?'Slightly flat — try again':'Slightly sharp — try again',cents<0?'flat':'sharp');
     }
     return;
