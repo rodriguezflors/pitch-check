@@ -184,6 +184,7 @@ canvas{display:block;width:100%;height:190px;background:var(--surface);border:1.
     <p>Within 10 cents counts as in tune; a semitone is 100 cents.</p>
     <p>Sing an open vowel like "ah" in a quiet room. Hold the phone about an arm's length away.</p>
     <p>Reference notes now ring for about as long as you need to hold a note steady (around a third of a second), and the tone itself has a softer, more piano-like strike and decay.</p>
+    <p>In Sequence and Memory mode, matching is now more forgiving (within about a third of a semitone) and octave-flexible — singing the right note an octave higher or lower than the reference still counts as correct.</p>
     <p>In Sequence mode, play the notes as a chord or one by one, then sing them back in order — each circle turns into a check once you hold that note steady for a moment, and the app moves you to the next one.</p>
     <p>Set the length to 1 for a single-note trainer, or 3 for a chord trainer. Tap 🎲 Random note(s) to get a fresh pick from the piano's two center octaves — it plays right away, and you can tap Play sequence any time to hear it again. Turn on Auto-continue to get a brand new random note or chord automatically each time you complete one.</p>
     <p><b>Memory mode</b> is built for people who lose earlier notes as soon as they hear a new one. It starts with a single note; each time you sing it back correctly, it replays everything so far plus one new note, and you sing the whole chain from the start. This forces you to actually retain each pitch rather than only the most recent one — a normal skill to build, and it improves with repetition.</p>
@@ -536,7 +537,8 @@ function update(midi,f,dt){
   $('nName').textContent=nameOf(near);$('nOct').textContent=octOf(near);
   $('hz').textContent=f.toFixed(1);
   const ref=currentRef(near);
-  const cents=(midi-ref)*100;
+  const octOffset=Math.round((midi-ref)/12);
+  const cents=(midi-ref-octOffset*12)*100;
   const shown=Math.max(-50,Math.min(50,cents));
   $('cents').textContent=(cents>0?'+':'')+Math.round(cents);
   $('marker').style.transform=`rotate(${shown*1.8}deg)`;$('marker').style.opacity=1;
@@ -549,7 +551,7 @@ function update(midi,f,dt){
       setVerdict('Sequence complete! 🎉','good');
     }else{
       const want=seqNotes[seqIndex];
-      if(ac<=20){
+      if(ac<=35){
         holdMs+=dt;
         if(holdMs>=HOLD_MS){
           seqStates[seqIndex]='correct';seqIndex++;holdMs=0;
@@ -574,7 +576,7 @@ function update(midi,f,dt){
 
   if(mode==='memory'){
     const want=memPool[memPos];
-    if(ac<=20){
+    if(ac<=35){
       holdMs+=dt;
       if(holdMs>=HOLD_MS){
         memPos++;holdMs=0;renderMemProgress();
