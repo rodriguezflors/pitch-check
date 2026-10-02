@@ -185,6 +185,8 @@ canvas{display:block;width:100%;height:190px;background:var(--surface);border:1.
     <p>Sing an open vowel like "ah" in a quiet room. Hold the phone about an arm's length away.</p>
     <p>Reference notes now ring for about as long as you need to hold a note steady (around a third of a second), and the tone itself has a softer, more piano-like strike and decay.</p>
     <p>In Sequence and Memory mode, matching now accepts anything closer to the target note than to its neighbors (within half a semitone) and is octave-flexible — singing the right note an octave higher or lower than the reference still counts as correct. A brief wobble off-pitch no longer resets your progress to zero; it just eases back a bit, so natural vibrato won't keep you from confirming a note you're actually holding.</p>
+    <p>When Sequence mode is set to <b>Play as chord</b>, you can sing the notes back in any order — whichever of the chord's notes you're closest to is the one being checked, and each gets marked off as you hit it. Switch to <b>Play one by one</b> if you'd rather practice singing them back in the exact order they were played.</p>
+    <p>Reference notes now ring out for about a second (longer and more natural-sounding) without requiring you to hold your own note any longer than before. The piano tone also has a touch of room ambience and tiny natural pitch variation between notes, so it sounds a little less like a synthesizer and a little more like a real instrument.</p>
     <p>In Sequence mode, play the notes as a chord or one by one, then sing them back in order — each circle turns into a check once you hold that note steady for a moment, and the app moves you to the next one.</p>
     <p>Set the length to 1 for a single-note trainer, or 3 for a chord trainer. Tap 🎲 Random note(s) to get a fresh pick from the piano's two center octaves — it plays right away, and you can tap Play sequence any time to hear it again. Turn on Auto-continue to get a brand new random note or chord automatically each time you complete one.</p>
     <p><b>Memory mode</b> is built for people who lose earlier notes as soon as they hear a new one. It starts with a single note; each time you sing it back correctly, it replays everything so far plus one new note, and you sing the whole chain from the start. This forces you to actually retain each pitch rather than only the most recent one — a normal skill to build, and it improves with repetition.</p>
@@ -261,9 +263,21 @@ let mode='free',target=60;
 let hist=[],smooth=null,lastVoiced=0,lastFrame=0;
 let trail=[];const WINDOW=8000;
 let viewCenter=60,voicedMs=0,goodMs=0,holdMs=0,bestHold=0;
-let seqLen=3,seqNotes=[57,61,64,60],seqIndex=0,seqStates=['current','pending','pending','pending'],seqPlayMode='chord',seqDone=false,comboCount=0;
+let seqLen=3,seqNotes=[57,61,64,60],seqIndex=0,seqStates=['current','pending','pending','pending'],seqPlayMode='chord',seqDone=false,comboCount=0,chordTargetIdx=-1;
 let memPool=[],memLen=1,memPos=0,memBest=1;
-const HOLD_MS=280,HOLD_S=HOLD_MS/1000,NOTE_GAP=Math.max(0.1,HOLD_S*0.35);
+const HOLD_MS=280,HOLD_S=HOLD_MS/1000; // required steady-hold time to confirm a note — unaffected by playback length
+const PLAY_S=1.0,NOTE_GAP=0.28; // how long reference notes ring out when played — can differ from HOLD_S
+function nearestRemainingIdx(midiVal){
+  let bestI=-1,bestD=1e9;
+  for(let i=0;i<seqLen;i++){
+    if(seqStates[i]==='correct')continue;
+    const diff=midiVal-seqNotes[i];
+    const oct=Math.round(diff/12);
+    const d=Math.abs(diff-oct*12);
+    if(d<bestD){bestD=d;bestI=i;}
+  }
+  return bestI;
+}
 
 // target select
 const sel=$('targetSel');
@@ -291,8 +305,8 @@ function updateSeqVisibility(){seqCols.forEach((col,i)=>{col.style.display=i<seq
 updateSeqVisibility();
 $('lenDown').onclick=()=>{seqLen=Math.max(1,seqLen-1);updateSeqVisibility();resetSeqAttempt();};
 $('lenUp').onclick=()=>{seqLen=Math.min(4,seqLen+1);updateSeqVisibility();resetSeqAttempt();};
-$('seqChord').onclick=()=>{seqPlayMode='chord';$('seqChord').setAttribute('aria-pressed','true');$('seqMelody').setAttribute('aria-pressed','false');};
-$('seqMelody').onclick=()=>{seqPlayMode='melody';$('seqMelody').setAttribute('aria-pressed','true');$('seqChord').setAttribute('aria-pressed','false');};
+$('seqChord').onclick=()=>{seqPlayMode='chord';$('seqChord').setAttribute('aria-pressed','true');$('seqMelody').setAttribute('aria-pressed','false');resetSeqAttempt();};
+$('seqMelody').onclick=()=>{seqPlayMode='melody';$('seqMelody').setAttribute('aria-pressed','true');$('seqChord').setAttribute('aria-pressed','false');resetSeqAttempt();};
 
 function renderSeqProgress(){
   const wrap=$('seqProgress');wrap.innerHTML='';
@@ -304,10 +318,15 @@ function renderSeqProgress(){
   }
 }
 function resetSeqAttempt(){
-  seqIndex=0;seqDone=false;holdMs=0;
-  seqStates=[0,1,2,3].map(i=>i===0?'current':'pending');
+  seqIndex=0;seqDone=false;holdMs=0;chordTargetIdx=-1;
+  seqStates=(seqPlayMode==='chord')
+    ?[0,1,2,3].map(()=>'pending')
+    :[0,1,2,3].map(i=>i===0?'current':'pending');
   renderSeqProgress();
-  if(mode==='sequence')setVerdict('Sing note 1: '+nameOf(seqNotes[0])+octOf(seqNotes[0]),'');
+  if(mode==='sequence'){
+    if(seqPlayMode==='chord')setVerdict(seqLen===1?'Sing it back':'Sing any note from the chord','');
+    else setVerdict('Sing note 1: '+nameOf(seqNotes[0])+octOf(seqNotes[0]),'');
+  }
 }
 $('seqResetBtn').onclick=()=>{comboCount=0;$('comboCount').textContent=0;resetSeqAttempt();};
 resetSeqAttempt();
@@ -332,7 +351,7 @@ function renderMemProgress(){
 function memReveal(){
   try{
     const ctx=toneContext();
-    let t=ctx.currentTime+0.05;const dur=HOLD_S,gap=NOTE_GAP;
+    let t=ctx.currentTime+0.05;const dur=PLAY_S,gap=NOTE_GAP;
     memPool.slice(0,memLen).forEach(m=>{schedulePiano(ctx,midiToFreq(m),t,dur);t+=dur+gap;});
   }catch(e){}
   if(mode==='memory')setVerdict(memLen===1?'Sing it back':'Sing all '+memLen+' back, in order','');
@@ -353,7 +372,11 @@ $('memNewBtn').onclick=memNewSession;
 
 function currentRef(near){
   if(mode==='target')return target;
-  if(mode==='sequence')return seqDone?seqNotes[seqLen-1]:seqNotes[seqIndex];
+  if(mode==='sequence'){
+    if(seqDone)return seqNotes[seqLen-1];
+    if(seqPlayMode==='chord'){const idx=nearestRemainingIdx(near);return idx>=0?seqNotes[idx]:seqNotes[seqLen-1];}
+    return seqNotes[seqIndex];
+  }
   if(mode==='memory')return memPool[Math.min(memPos,memPool.length-1)];
   return near;
 }
@@ -376,13 +399,27 @@ $('modeMem').onclick=()=>setMode('memory');
 let toneCtx=null;
 function toneContext(){const ctx=actx||toneCtx||(toneCtx=new (window.AudioContext||window.webkitAudioContext)());if(ctx.state==='suspended')ctx.resume();return ctx;}
 function midiToFreq(m){return 440*Math.pow(2,(m-69)/12);}
+let reverbBus=null;
+function ensureReverb(ctx){
+  if(reverbBus&&reverbBus.ctx===ctx)return reverbBus;
+  try{
+    const dur=1.3,sr=ctx.sampleRate,len=Math.floor(sr*dur),imp=ctx.createBuffer(2,len,sr);
+    for(let c=0;c<2;c++){const d=imp.getChannelData(c);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.2);}
+    const convolver=ctx.createConvolver();convolver.buffer=imp;convolver.connect(ctx.destination);
+    reverbBus={ctx,convolver};
+  }catch(e){reverbBus={ctx,convolver:null};}
+  return reverbBus;
+}
 function schedulePiano(ctx,freq,t0,dur,vel){
   vel=vel===undefined?0.9:vel;
+  freq*=Math.pow(2,(Math.random()*4-2)/1200); // tiny humanizing detune so repeated notes don't sound robotically identical
   const master=ctx.createGain();master.gain.value=1;
   const filt=ctx.createBiquadFilter();filt.type='lowpass';
   filt.frequency.setValueAtTime(7200,t0);
   filt.frequency.exponentialRampToValueAtTime(1100,t0+0.5);
   master.connect(filt);filt.connect(ctx.destination);
+  const {convolver}=ensureReverb(ctx);
+  if(convolver){const wet=ctx.createGain();wet.gain.value=0.15;filt.connect(wet);wet.connect(convolver);}
 
   // soft hammer-strike transient: a brief filtered noise burst gives the attack a percussive "thock"
   try{
@@ -397,7 +434,7 @@ function schedulePiano(ctx,freq,t0,dur,vel){
   }catch(e){}
 
   // partials with slight string inharmonicity (stiff-string formula), each with a fast-then-slow decay
-  const partials=[1,2,3,4,5,6],amps=[1,0.5,0.28,0.16,0.09,0.05],B=0.00035;
+  const partials=[1,2,3,4,5,6,7],amps=[1,0.5,0.28,0.16,0.09,0.05,0.03],B=0.00035;
   partials.forEach((n,i)=>{
     const pf=freq*n*Math.sqrt(1+B*n*n);
     const o=ctx.createOscillator();o.type='sine';o.frequency.value=pf;
@@ -415,7 +452,7 @@ function schedulePiano(ctx,freq,t0,dur,vel){
   });
 }
 $('playBtn').onclick=()=>{
-  try{const ctx=toneContext();schedulePiano(ctx,midiToFreq(target),ctx.currentTime+0.02,HOLD_S);}catch(e){}
+  try{const ctx=toneContext();schedulePiano(ctx,midiToFreq(target),ctx.currentTime+0.02,PLAY_S);}catch(e){}
 };
 function playSeqDemo(){
   try{
@@ -423,9 +460,9 @@ function playSeqDemo(){
     const t0=ctx.currentTime+0.05;
     const freqs=seqNotes.slice(0,seqLen).map(midiToFreq);
     if(seqPlayMode==='chord'){
-      freqs.forEach(f=>schedulePiano(ctx,f,t0,HOLD_S));
+      freqs.forEach(f=>schedulePiano(ctx,f,t0,PLAY_S));
     }else{
-      const dur=HOLD_S,gap=NOTE_GAP;
+      const dur=PLAY_S,gap=NOTE_GAP;
       freqs.forEach((f,i)=>schedulePiano(ctx,f,t0+i*(dur+gap),dur));
     }
   }catch(e){}
@@ -448,12 +485,12 @@ function playRandomDemo(){
     const freqs=seqNotes.slice(0,seqLen).map(midiToFreq);
     let t=ctx.currentTime+0.05;
     if(seqLen>1){
-      freqs.forEach(f=>schedulePiano(ctx,f,t,HOLD_S));
-      t+=HOLD_S+NOTE_GAP;
-      const dur=HOLD_S,gap=NOTE_GAP;
+      freqs.forEach(f=>schedulePiano(ctx,f,t,PLAY_S));
+      t+=PLAY_S+NOTE_GAP;
+      const dur=PLAY_S,gap=NOTE_GAP;
       freqs.forEach((f,i)=>schedulePiano(ctx,f,t+i*(dur+gap),dur));
     }else{
-      schedulePiano(ctx,freqs[0],t,HOLD_S);
+      schedulePiano(ctx,freqs[0],t,PLAY_S);
     }
   }catch(e){}
 }
@@ -521,12 +558,12 @@ function loop(now){
   else{ if(now-lastVoiced>400){idle();holdMs=0;
     let msg='Sing a note';
     if(mode==='target')msg='Sing '+nameOf(target)+octOf(target);
-    else if(mode==='sequence')msg=seqDone?'Sequence complete! 🎉':'Sing note '+(seqIndex+1)+': '+nameOf(seqNotes[seqIndex])+octOf(seqNotes[seqIndex]);
+    else if(mode==='sequence')msg=seqDone?'Sequence complete! 🎉':(seqPlayMode==='chord'?(seqLen===1?'Sing it back':'Sing any note from the chord'):'Sing note '+(seqIndex+1)+': '+nameOf(seqNotes[seqIndex])+octOf(seqNotes[seqIndex]));
     else if(mode==='memory')msg=memLen===1?'Sing it back':'Sing all '+memLen+' back, in order';
     setVerdict(msg,mode==='sequence'&&seqDone?'good':'');
   } }
 
-  const focus=(mode==='target')?target:(mode==='sequence')?(seqDone?seqNotes[seqLen-1]:seqNotes[seqIndex]):(mode==='memory')?memPool[Math.min(memPos,memPool.length-1)]:(midi!==null?midi:viewCenter);
+  const focus=(mode==='free')?(midi!==null?midi:viewCenter):currentRef(Math.round(midi!==null?midi:viewCenter));
   viewCenter+= (focus-viewCenter)*0.08;
   drawTrail();
   requestAnimationFrame(loop);
@@ -549,6 +586,26 @@ function update(midi,f,dt){
   if(mode==='sequence'){
     if(seqDone){
       setVerdict('Sequence complete! 🎉','good');
+    }else if(seqPlayMode==='chord'){
+      const idx=nearestRemainingIdx(near);
+      if(idx!==chordTargetIdx){chordTargetIdx=idx;holdMs=0;}
+      if(ac<=50){
+        holdMs+=dt;
+        if(holdMs>=HOLD_MS){
+          seqStates[idx]='correct';holdMs=0;chordTargetIdx=-1;renderSeqProgress();
+          const left=seqLen-seqStates.slice(0,seqLen).filter(s=>s==='correct').length;
+          if(left<=0){
+            seqDone=true;comboCount++;$('comboCount').textContent=comboCount;
+            setVerdict('Sequence complete! 🎉','good');
+            if($('autoContinue').checked){
+              setTimeout(()=>{ if(mode==='sequence'&&running)randomizeAndPlay(); },900);
+            }
+          }else setVerdict('Got it — '+left+' more to go','good');
+        }else setVerdict('Holding…','good');
+      }else{
+        holdMs=Math.max(0,holdMs-dt*1.5);
+        setVerdict(cents<0?'Slightly flat — try again':'Slightly sharp — try again',cents<0?'flat':'sharp');
+      }
     }else{
       const want=seqNotes[seqIndex];
       if(ac<=50){
@@ -635,7 +692,7 @@ function drawTrail(){
     if(nat){g2.fillStyle=C.muted;g2.fillText(nameOf(m)+octOf(m),6,yy);}
   }
   if(mode==='target'||mode==='sequence'||mode==='memory'){
-    const bandNote=mode==='target'?target:(mode==='memory')?memPool[Math.min(memPos,memPool.length-1)]:(seqDone?seqNotes[seqLen-1]:seqNotes[seqIndex]);
+    const bandNote=currentRef(Math.round(viewCenter));
     const yy=y(bandNote),band=Math.abs(y(bandNote+0.15)-yy);
     g2.fillStyle=C.good;g2.globalAlpha=0.16;g2.fillRect(left,yy-band,W-left,band*2);g2.globalAlpha=1;
     g2.strokeStyle=C.good;g2.lineWidth=1.5;g2.beginPath();g2.moveTo(left,yy);g2.lineTo(W,yy);g2.stroke();
@@ -645,7 +702,7 @@ function drawTrail(){
   g2.lineWidth=3;g2.lineCap='round';g2.lineJoin='round';
   for(let i=1;i<trail.length;i++){
     const a=trail[i-1],b=trail[i];if(a.m===null||b.m===null)continue;
-    const ref=(mode==='target')?target:(mode==='memory')?memPool[Math.min(memPos,memPool.length-1)]:(mode==='sequence')?(seqDone?seqNotes[seqLen-1]:seqNotes[seqIndex]):Math.round(b.m);
+    const ref=(mode==='free')?Math.round(b.m):currentRef(Math.round(b.m));
     const c=(b.m-ref)*100;
     g2.strokeStyle=Math.abs(c)<=10?C.good:(c<0?C.flat:C.sharp);
     g2.beginPath();g2.moveTo(x(a.t),y(a.m));g2.lineTo(x(b.t),y(b.m));g2.stroke();
