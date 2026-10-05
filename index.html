@@ -63,6 +63,9 @@ select{font:inherit;font-weight:700;height:40px;padding:0 10px;border-radius:10p
 .score b{color:var(--ink);font-size:1.15rem}
 .linkbtn{border:0;background:none;color:var(--muted);text-decoration:underline;padding:4px}
 
+.tolrow{display:grid;gap:6px}
+.tolrow label{color:var(--muted);font-size:.9rem}
+.tolrow .seg button{padding:8px 4px;font-size:.82rem}
 .lenrow{display:flex;align-items:center;gap:10px}
 .lenrow label{color:var(--muted);margin-right:auto}
 .lenrow .step{width:34px;height:34px;font-size:1rem}
@@ -120,6 +123,15 @@ canvas{display:block;width:100%;height:190px;background:var(--surface);border:1.
       <button id="modeTarget" aria-pressed="false">Target note</button>
       <button id="modeSeq" aria-pressed="false">Sequence</button>
       <button id="modeMem" aria-pressed="false">Memory</button>
+    </div>
+    <div class="tolrow">
+      <label>Pitch tolerance (how close counts as correct)</label>
+      <div class="seg" id="tolSeg" role="group" aria-label="Pitch tolerance" style="grid-template-columns:repeat(4,1fr)">
+        <button data-tol="15" aria-pressed="false">Strict</button>
+        <button data-tol="30" aria-pressed="false">Normal</button>
+        <button data-tol="50" aria-pressed="false">Forgiving</button>
+        <button data-tol="75" aria-pressed="true">Very forgiving</button>
+      </div>
     </div>
     <div class="target" id="targetBox">
       <div class="trow">
@@ -185,8 +197,9 @@ canvas{display:block;width:100%;height:190px;background:var(--surface);border:1.
     <p>Sing an open vowel like "ah" in a quiet room. Hold the phone about an arm's length away.</p>
     <p>Reference notes now ring for about as long as you need to hold a note steady (around a third of a second), and the tone itself has a softer, more piano-like strike and decay.</p>
     <p>In Sequence and Memory mode, matching now accepts anything closer to the target note than to its neighbors (within half a semitone) and is octave-flexible — singing the right note an octave higher or lower than the reference still counts as correct. A brief wobble off-pitch no longer resets your progress to zero; it just eases back a bit, so natural vibrato won't keep you from confirming a note you're actually holding.</p>
+    <p><b>Pitch tolerance</b> controls how close you need to be. It starts on <i>Very forgiving</i> (up to about three-quarters of a semitone off still counts in Sequence and Memory mode); the green zone on the dial grows and shrinks to show exactly what counts. A brief wobble off-pitch now only slowly drains your hold progress, so vibrato won't keep resetting it. The cents readout under the dial shows how far you are from the note you're aiming for.</p>
     <p>When Sequence mode is set to <b>Play as chord</b>, you can sing the notes back in any order — whichever of the chord's notes you're closest to is the one being checked, and each gets marked off as you hit it. Switch to <b>Play one by one</b> if you'd rather practice singing them back in the exact order they were played.</p>
-    <p>Reference notes now ring out for about a second (longer and more natural-sounding) without requiring you to hold your own note any longer than before. The piano tone also has a touch of room ambience and tiny natural pitch variation between notes, so it sounds a little less like a synthesizer and a little more like a real instrument.</p>
+    <p>Reference notes now ring out for a couple of seconds — longer, fuller, and deeper, with more low-end body and a longer natural decay — without requiring you to hold your own note any longer than before. The piano tone also has a touch of room ambience and tiny natural pitch variation between notes, so it sounds a little less like a synthesizer and a little more like a real instrument.</p>
     <p>In Sequence mode, play the notes as a chord or one by one, then sing them back in order — each circle turns into a check once you hold that note steady for a moment, and the app moves you to the next one.</p>
     <p>Set the length to 1 for a single-note trainer, or 3 for a chord trainer. Tap 🎲 Random note(s) to get a fresh pick from the piano's two center octaves — it plays right away, and you can tap Play sequence any time to hear it again. Turn on Auto-continue to get a brand new random note or chord automatically each time you complete one.</p>
     <p><b>Memory mode</b> is built for people who lose earlier notes as soon as they hear a new one. It starts with a single note; each time you sing it back correctly, it replays everything so far plus one new note, and you sing the whole chain from the start. This forces you to actually retain each pitch rather than only the most recent one — a normal skill to build, and it improves with repetition.</p>
@@ -260,13 +273,31 @@ function detect(b,sr){
 // ---------- state ----------
 let actx=null,analyser=null,stream=null,buf=null,running=false;
 let mode='free',target=60;
+let tol=75; // cents: how close counts as correct in Sequence/Memory (and sets "in tune" width elsewhere)
+try{const s=parseInt(localStorage.getItem('pitchTol'),10);if([15,30,50,75].includes(s))tol=s;}catch(e){}
+function goodThr(){return (mode==='sequence'||mode==='memory')?tol:Math.max(10,tol*0.5);}
+function setZone(){
+  const h=Math.min(50,goodThr());
+  const[sx,sy]=pt(-h,R),[ex,ey]=pt(h,R);
+  $('zone').setAttribute('d',`M${sx} ${sy} A${R} ${R} 0 0 1 ${ex} ${ey}`);
+}
+document.querySelectorAll('#tolSeg button').forEach(b=>{
+  b.setAttribute('aria-pressed',String(+b.dataset.tol===tol));
+  b.addEventListener('click',()=>{
+    tol=+b.dataset.tol;
+    document.querySelectorAll('#tolSeg button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
+    try{localStorage.setItem('pitchTol',String(tol));}catch(e){}
+    setZone();drawTrail();
+  });
+});
+setZone();
 let hist=[],smooth=null,lastVoiced=0,lastFrame=0;
 let trail=[];const WINDOW=8000;
 let viewCenter=60,voicedMs=0,goodMs=0,holdMs=0,bestHold=0;
 let seqLen=3,seqNotes=[57,61,64,60],seqIndex=0,seqStates=['current','pending','pending','pending'],seqPlayMode='chord',seqDone=false,comboCount=0,chordTargetIdx=-1;
 let memPool=[],memLen=1,memPos=0,memBest=1;
 const HOLD_MS=280,HOLD_S=HOLD_MS/1000; // required steady-hold time to confirm a note — unaffected by playback length
-const PLAY_S=1.0,NOTE_GAP=0.28; // how long reference notes ring out when played — can differ from HOLD_S
+const PLAY_S=2.2,NOTE_GAP=0.4; // how long reference notes ring out when played — can differ from HOLD_S
 function nearestRemainingIdx(midiVal){
   let bestI=-1,bestD=1e9;
   for(let i=0;i<seqLen;i++){
@@ -389,7 +420,7 @@ function setMode(m){mode=m;$('modeFree').setAttribute('aria-pressed',m==='free')
   if(m==='target')resetScore();
   if(m==='sequence')resetSeqAttempt();
   if(m==='memory')memNewSession();
-  drawTrail();}
+  setZone();drawTrail();}
 $('modeFree').onclick=()=>setMode('free');
 $('modeTarget').onclick=()=>setMode('target');
 $('modeSeq').onclick=()=>setMode('sequence');
@@ -403,7 +434,7 @@ let reverbBus=null;
 function ensureReverb(ctx){
   if(reverbBus&&reverbBus.ctx===ctx)return reverbBus;
   try{
-    const dur=1.3,sr=ctx.sampleRate,len=Math.floor(sr*dur),imp=ctx.createBuffer(2,len,sr);
+    const dur=2.4,sr=ctx.sampleRate,len=Math.floor(sr*dur),imp=ctx.createBuffer(2,len,sr);
     for(let c=0;c<2;c++){const d=imp.getChannelData(c);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.2);}
     const convolver=ctx.createConvolver();convolver.buffer=imp;convolver.connect(ctx.destination);
     reverbBus={ctx,convolver};
@@ -415,11 +446,23 @@ function schedulePiano(ctx,freq,t0,dur,vel){
   freq*=Math.pow(2,(Math.random()*4-2)/1200); // tiny humanizing detune so repeated notes don't sound robotically identical
   const master=ctx.createGain();master.gain.value=1;
   const filt=ctx.createBiquadFilter();filt.type='lowpass';
-  filt.frequency.setValueAtTime(7200,t0);
-  filt.frequency.exponentialRampToValueAtTime(1100,t0+0.5);
+  filt.frequency.setValueAtTime(6200,t0);
+  filt.frequency.exponentialRampToValueAtTime(750,t0+1.1);
   master.connect(filt);filt.connect(ctx.destination);
   const {convolver}=ensureReverb(ctx);
-  if(convolver){const wet=ctx.createGain();wet.gain.value=0.15;filt.connect(wet);wet.connect(convolver);}
+  if(convolver){const wet=ctx.createGain();wet.gain.value=0.2;filt.connect(wet);wet.connect(convolver);}
+
+  // sub-octave body partial — adds low-end weight/warmth under the main tone, like a piano's soundboard resonance
+  {
+    const o=ctx.createOscillator();o.type='sine';o.frequency.value=freq*0.5;
+    const g=ctx.createGain();const peak=vel*0.22;
+    const end=t0+Math.max(1.6,dur*0.9);
+    g.gain.setValueAtTime(0,t0);
+    g.gain.linearRampToValueAtTime(peak,t0+0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001,end);
+    o.connect(g);g.connect(master);
+    o.start(t0);o.stop(end+0.05);
+  }
 
   // soft hammer-strike transient: a brief filtered noise burst gives the attack a percussive "thock"
   try{
@@ -440,9 +483,9 @@ function schedulePiano(ctx,freq,t0,dur,vel){
     const o=ctx.createOscillator();o.type='sine';o.frequency.value=pf;
     const g=ctx.createGain();
     const peak=vel*amps[i]*0.5;
-    const fastTau=0.09,slowTau=Math.max(0.35,1.4/n);
-    const fastFloor=Math.max(peak*0.42,0.0002);
-    const end=Math.max(t0+fastTau+0.05,t0+slowTau+dur*0.15);
+    const fastTau=0.12,slowTau=Math.max(0.9,3.0/n);
+    const fastFloor=Math.max(peak*0.5,0.0002);
+    const end=Math.max(t0+fastTau+0.05,t0+slowTau+dur*0.35);
     g.gain.setValueAtTime(0,t0);
     g.gain.linearRampToValueAtTime(peak,t0+0.005);
     g.gain.exponentialRampToValueAtTime(fastFloor,t0+fastTau);
@@ -573,23 +616,23 @@ function update(midi,f,dt){
   const near=Math.round(midi);
   $('nName').textContent=nameOf(near);$('nOct').textContent=octOf(near);
   $('hz').textContent=f.toFixed(1);
-  const ref=currentRef(near);
+  const ref=currentRef(mode==='free'?near:midi);
   const octOffset=Math.round((midi-ref)/12);
   const cents=(midi-ref-octOffset*12)*100;
   const shown=Math.max(-50,Math.min(50,cents));
   $('cents').textContent=(cents>0?'+':'')+Math.round(cents);
   $('marker').style.transform=`rotate(${shown*1.8}deg)`;$('marker').style.opacity=1;
   const ac=Math.abs(cents);
-  const col=ac<=10?C.good:(cents<0?C.flat:C.sharp);
+  const gt=goodThr();const col=ac<=gt?C.good:(cents<0?C.flat:C.sharp);
   $('dot').setAttribute('fill',col);
 
   if(mode==='sequence'){
     if(seqDone){
       setVerdict('Sequence complete! 🎉','good');
     }else if(seqPlayMode==='chord'){
-      const idx=nearestRemainingIdx(near);
+      const idx=nearestRemainingIdx(midi);
       if(idx!==chordTargetIdx){chordTargetIdx=idx;holdMs=0;}
-      if(ac<=50){
+      if(ac<=tol){
         holdMs+=dt;
         if(holdMs>=HOLD_MS){
           seqStates[idx]='correct';holdMs=0;chordTargetIdx=-1;renderSeqProgress();
@@ -603,12 +646,19 @@ function update(midi,f,dt){
           }else setVerdict('Got it — '+left+' more to go','good');
         }else setVerdict('Holding…','good');
       }else{
-        holdMs=Math.max(0,holdMs-dt*1.5);
-        setVerdict(cents<0?'Slightly flat — try again':'Slightly sharp — try again',cents<0?'flat':'sharp');
+        holdMs=Math.max(0,holdMs-dt*0.5);
+        let dupe=false;
+        for(let i=0;i<seqLen;i++){
+          if(seqStates[i]!=='correct')continue;
+          const diff=midi-seqNotes[i],o=Math.round(diff/12);
+          if(Math.abs(diff-o*12)*100<=tol){dupe=true;break;}
+        }
+        if(dupe)setVerdict('Already got that note — sing a different one','good');
+        else setVerdict(cents<0?'Slightly flat — try again':'Slightly sharp — try again',cents<0?'flat':'sharp');
       }
     }else{
       const want=seqNotes[seqIndex];
-      if(ac<=50){
+      if(ac<=tol){
         holdMs+=dt;
         if(holdMs>=HOLD_MS){
           seqStates[seqIndex]='correct';seqIndex++;holdMs=0;
@@ -622,7 +672,7 @@ function update(midi,f,dt){
           else{seqStates[seqIndex]='current';renderSeqProgress();setVerdict('Nice — now sing note '+(seqIndex+1)+': '+nameOf(seqNotes[seqIndex])+octOf(seqNotes[seqIndex]),'good');}
         }else setVerdict('Holding note '+(seqIndex+1)+'…','good');
       }else{
-        holdMs=Math.max(0,holdMs-dt*1.5);
+        holdMs=Math.max(0,holdMs-dt*0.5);
         const semis=Math.round(Math.abs(midi-want));
         if(semis>=1)setVerdict((cents<0?'Too low':'Too high')+' — aim for '+nameOf(want)+octOf(want),cents<0?'flat':'sharp');
         else setVerdict((cents<0?'Slightly flat':'Slightly sharp')+' for note '+(seqIndex+1),cents<0?'flat':'sharp');
@@ -633,7 +683,7 @@ function update(midi,f,dt){
 
   if(mode==='memory'){
     const want=memPool[memPos];
-    if(ac<=50){
+    if(ac<=tol){
       holdMs+=dt;
       if(holdMs>=HOLD_MS){
         memPos++;holdMs=0;renderMemProgress();
@@ -650,7 +700,7 @@ function update(midi,f,dt){
         }else setVerdict('Good — now note '+(memPos+1)+' of '+memLen+', from memory','good');
       }else setVerdict('Holding…','good');
     }else{
-      holdMs=Math.max(0,holdMs-dt*1.5);
+      holdMs=Math.max(0,holdMs-dt*0.5);
       setVerdict(cents<0?'Slightly flat — try again':'Slightly sharp — try again',cents<0?'flat':'sharp');
     }
     return;
@@ -660,13 +710,13 @@ function update(midi,f,dt){
     const semis=Math.round(Math.abs(midi-target));
     const unit=semis===1?'semitone':'semitones';
     setVerdict(cents<0?`Too low by ${semis} ${unit}`:`Too high by ${semis} ${unit}`,cents<0?'flat':'sharp');
-  }else if(ac<=10)setVerdict('In tune','good');
+  }else if(ac<=gt)setVerdict('In tune','good');
   else if(cents<0)setVerdict(ac>25?'Flat, go higher':'Slightly flat','flat');
   else setVerdict(ac>25?'Sharp, go lower':'Slightly sharp','sharp');
 
   if(mode==='target'){
     voicedMs+=dt;
-    if(ac<=15){goodMs+=dt;holdMs+=dt;if(holdMs>bestHold)bestHold=holdMs;}else holdMs=0;
+    if(ac<=gt){goodMs+=dt;holdMs+=dt;if(holdMs>bestHold)bestHold=holdMs;}else holdMs=0;
     $('pct').textContent=Math.round(100*goodMs/voicedMs)+'%';
     $('hold').textContent=(bestHold/1000).toFixed(1)+'s';
   }
@@ -704,7 +754,7 @@ function drawTrail(){
     const a=trail[i-1],b=trail[i];if(a.m===null||b.m===null)continue;
     const ref=(mode==='free')?Math.round(b.m):currentRef(Math.round(b.m));
     const c=(b.m-ref)*100;
-    g2.strokeStyle=Math.abs(c)<=10?C.good:(c<0?C.flat:C.sharp);
+    g2.strokeStyle=Math.abs(c)<=goodThr()?C.good:(c<0?C.flat:C.sharp);
     g2.beginPath();g2.moveTo(x(a.t),y(a.m));g2.lineTo(x(b.t),y(b.m));g2.stroke();
   }
 }
